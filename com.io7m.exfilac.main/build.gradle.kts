@@ -19,9 +19,9 @@ android {
      * code count revisions of the GPS patch on one upstream release.
      */
     this.applicationIdSuffix = ".gps"
-    this.versionNameSuffix = "-gps2"
+    this.versionNameSuffix = "-gps3"
     this.versionName = rootProject.ext["VERSION_NAME"].toString()
-    this.versionCode = rootProject.ext["VERSION_CODE"].toString().toInt() * 100 + 2
+    this.versionCode = rootProject.ext["VERSION_CODE"].toString().toInt() * 100 + 3
     this.buildConfigField("String", "EXFILAC_GIT_COMMIT", "\"${getGitHash()}\"")
     this.buildConfigField("String", "EXFILAC_VERSION", "\"${rootProject.ext["VERSION_NAME"]}\"")
   }
