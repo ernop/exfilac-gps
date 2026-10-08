@@ -91,8 +91,8 @@ class EFContentTreeDevice(
    * read refuses to start without it. MediaStore.setRequireOriginal cannot make that check:
    * getMediaUri grants access to the URI without a query, MediaProvider matches the grant
    * against the URI including "?requireOriginal=1", and every open fails with "has no
-   * access". MediaStore has no entry for trashed, pending and .thumbnails files, so those
-   * fail here.
+   * access". MediaStore has no entry for trashed, pending and .thumbnails files; treeWalk skips
+   * them as hidden entries before they get here.
    */
 
   private fun originalUriOf(
@@ -185,6 +185,9 @@ class EFContentTreeDevice(
         childrenList = mutableListOf()
       )
       for (subNode in element.listFiles()) {
+        if (isHidden(subNode)) {
+          continue
+        }
         newParent.childrenList.add(
           this.treeWalk(
             source = source,
@@ -198,6 +201,19 @@ class EFContentTreeDevice(
     }
 
     throw IllegalStateException("File is not a file, directory, or virtual.")
+  }
+
+  /*
+   * Entries whose names start with "." are hidden: .thumbnails, .trashed-*, .pending-*, .nomedia
+   * and the like. MediaStore has no entry for most of them, so reading them would fail on every
+   * run, and a hidden directory such as .thumbnails can hold thousands of files. They are skipped
+   * without listing their contents.
+   */
+
+  private fun isHidden(
+    element: DocumentFile
+  ): Boolean {
+    return element.name?.startsWith(".") == true
   }
 
   private fun lastModifiedOf(
