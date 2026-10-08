@@ -77,6 +77,14 @@ class EFSupervisorService : Service() {
         areNotificationsPermittedSource.set(
           EFNotifications.notificationsArePermitted(EFApplication.application)
         )
+        try {
+          EFNotifications.updateUploadNotifications(
+            EFApplication.application,
+            EFApplication.application.exfilac
+          )
+        } catch (e: Throwable) {
+          this.logger.error("Failed to update notifications: ", e)
+        }
       }
     }, 1L, 5L, TimeUnit.SECONDS)
   }
@@ -128,7 +136,7 @@ class EFSupervisorService : Service() {
     try {
       ServiceCompat.startForeground(
         this,
-        1,
+        EFNotifications.SUPERVISOR_NOTIFICATION_ID,
         EFNotifications.buildNotification(this),
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
           ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC

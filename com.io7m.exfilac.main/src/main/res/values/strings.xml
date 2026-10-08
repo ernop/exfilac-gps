@@ -141,13 +141,18 @@
   <string name="timeDuration">Duration</string>
   <string name="bucket">Bucket</string>
 
-  <string name="notification_title">Exfilac</string>
-  <string name="notification_description">Exfilac is running.</string>
+  <string name="notification_title">Exfilac GPS</string>
+  <string name="notification_description">Exfilac GPS is running.</string>
+  <string name="notification_problems_channel">Upload problems</string>
+  <string name="notification_problem_title">%1$s: upload problem</string>
+  <string name="notification_problem_file">%1$s did not upload. The next run tries it again; a large file continues where it stopped.</string>
+  <string name="notification_problem_files">%1$d files did not upload, including %2$s. The next run tries them again; a large file continues where it stopped.</string>
+  <string name="notification_problem_upload">The upload stopped at \"%1$s\": %2$s</string>
   <string name="notification_explanation">
-    Due to restrictions in Android, Exfilac requires notifications to be enabled in order to
+    Due to restrictions in Android, Exfilac GPS requires notifications to be enabled in order to
     reliably run a background service that manages uploads.\n\n
-    Exfilac will never send you annoying notifications; they are purely needed because Android
-    now requires them for services.\n\n
+    Exfilac GPS uses notifications only to show what it is uploading and to tell you when files
+    fail to upload.\n\n
     Please enable notifications if you want to use scheduled uploads. Only manual uploads will
     work reliably if notifications are disabled.
   </string>
