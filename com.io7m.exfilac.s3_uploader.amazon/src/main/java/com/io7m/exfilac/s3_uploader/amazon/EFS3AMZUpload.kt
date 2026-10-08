@@ -26,6 +26,7 @@ import com.io7m.peixoto.sdk.software.amazon.awssdk.auth.credentials.AwsBasicCred
 import com.io7m.peixoto.sdk.software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import com.io7m.peixoto.sdk.software.amazon.awssdk.awscore.retry.AwsRetryStrategy
 import com.io7m.peixoto.sdk.software.amazon.awssdk.core.sync.RequestBody
+import com.io7m.peixoto.sdk.software.amazon.awssdk.http.ContentStreamProvider
 import com.io7m.peixoto.sdk.software.amazon.awssdk.http.SdkHttpClient
 import com.io7m.peixoto.sdk.software.amazon.awssdk.http.apache.ApacheHttpClient
 import com.io7m.peixoto.sdk.software.amazon.awssdk.regions.Region
@@ -37,12 +38,16 @@ import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.CompletedPa
 import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest
 import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.HeadObjectRequest
 import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.HeadObjectResponse
+import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest
+import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.ListPartsRequest
 import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.PutObjectRequest
+import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.S3Exception
 import com.io7m.peixoto.sdk.software.amazon.awssdk.services.s3.model.UploadPartRequest
 import org.apache.commons.io.input.BoundedInputStream
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import java.io.InputStream
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.Locale
@@ -66,6 +71,8 @@ class EFS3AMZUpload(
     16_777_216L
   private val minimumChunkSize =
     8_388_608L
+  private val maximumChunkCount =
+    900L
 
   private val resources =
     CloseableCollection.create()
@@ -78,9 +85,19 @@ class EFS3AMZUpload(
     AtomicBoolean()
   private val streamSupervised: AtomicReference<BoundedInputStream> =
     AtomicReference()
+  private val streamsOpened =
+    mutableListOf<InputStream>()
 
   @Volatile
   private var octetsThen = 0L
+
+  /*
+   * The octets of the parts of a multi-part upload that are already in the bucket. The stream
+   * supervisor adds the octets read so far from the stream of the part being sent.
+   */
+
+  @Volatile
+  private var octetsCompleted = 0L
 
   override fun execute() {
     this.executor =
@@ -146,19 +163,39 @@ class EFS3AMZUpload(
   private fun executeUploadSimple(
     client: S3Client
   ) {
-    BoundedInputStream.builder()
-      .setInputStream(this.upload.streams.invoke())
-      .get()
-      .use { inputStream ->
-        this.streamSupervised.set(inputStream)
+    this.upload.onInformativeEvent("Calculating local content hash.")
+    val contentSHA256 = this.localDigests(listOf()).sha256
+    this.upload.onInformativeEvent("Local content hash: $contentSHA256")
 
-        /*
-         * Start an upload thread and a supervisor thread. The supervisor thread observes
-         * data passing through the input stream and uses it to determine transfer speeds.
-         */
+    if (!this.isUploadNecessary(client, contentSHA256, recordSkipped = true)) {
+      return
+    }
 
-        this.executePutObject(inputStream, client)
-      }
+    val metadata =
+      mapOf(Pair(this.exfilacSHA256Header, contentSHA256))
+
+    val put =
+      PutObjectRequest.builder()
+        .bucket(this.upload.bucket)
+        .contentLength(this.upload.size)
+        .contentType(this.upload.contentType)
+        .metadata(metadata)
+        .key(this.upload.path)
+        .build()
+
+    this.upload.onInformativeEvent("Uploading file.")
+    try {
+      client.putObject(put, this.requestBodyOf(0L, this.upload.size))
+    } finally {
+      this.closeStreams()
+    }
+
+    if (this.isUploadNecessary(client, contentSHA256, recordSkipped = false)) {
+      throw IOException("After uploading, the size or hash does not match!")
+    }
+
+    this.upload.onInformativeEvent("Uploading completed.")
+    this.upload.onFileSuccessfullyUploaded()
   }
 
   /*
@@ -171,13 +208,13 @@ class EFS3AMZUpload(
       val stream = this.streamSupervised.get()
       if (stream != null) {
         try {
-          val octetsTransferredNow = stream.count
+          val octetsTransferredNow = this.octetsCompleted + stream.count
           val octetsInPeriod = octetsTransferredNow - this.octetsThen
-          this.octetsThen += octetsInPeriod
+          this.octetsThen = octetsTransferredNow
           this.upload.onStatistics.invoke(
             EFS3TransferStatistics(
               time = this.clock.now(),
-              octetsTransferred = this.octetsThen,
+              octetsTransferred = octetsTransferredNow,
               octetsExpected = this.upload.size,
               octetsThisPeriod = octetsInPeriod
             )
@@ -193,42 +230,6 @@ class EFS3AMZUpload(
         Thread.currentThread().interrupt()
       }
     }
-  }
-
-  private fun executePutObject(
-    inputStream: BoundedInputStream,
-    client: S3Client
-  ) {
-    this.upload.onInformativeEvent("Calculating local content hash.")
-    val contentSHA256 = this.sha256()
-    this.upload.onInformativeEvent("Local content hash: $contentSHA256")
-
-    if (!this.isUploadNecessary(client, contentSHA256, recordSkipped = true)) {
-      return
-    }
-
-    val metadata =
-      mapOf(Pair(this.exfilacSHA256Header, this.sha256()))
-
-    val put =
-      PutObjectRequest.builder()
-        .bucket(this.upload.bucket)
-        .contentLength(this.upload.size)
-        .contentType(this.upload.contentType)
-        .metadata(metadata)
-        .key(this.upload.path)
-        .build()
-
-    this.upload.onInformativeEvent("Uploading file.")
-    val body = RequestBody.fromInputStream(inputStream, this.upload.size)
-    client.putObject(put, body)
-
-    if (this.isUploadNecessary(client, contentSHA256, recordSkipped = false)) {
-      throw IOException("After uploading, the size or hash does not match!")
-    }
-
-    this.upload.onInformativeEvent("Uploading completed.")
-    this.upload.onFileSuccessfullyUploaded()
   }
 
   private fun isUploadNecessary(
@@ -272,102 +273,236 @@ class EFS3AMZUpload(
     return result.toMap()
   }
 
-  private fun sha256(): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    this.upload.streams.invoke()
-      .use { stream ->
-        val buffer = ByteArray(65536)
-        while (true) {
-          val r = stream.read(buffer)
+  private class LocalDigests(
+    val sha256: String,
+    val partMD5s: Map<Int, String>
+  )
+
+  /*
+   * Read the file once for its SHA-256 and, given the parts of a multi-part upload, the MD5 of
+   * each part. The file must still have the size it was listed with; a file that changed since
+   * then fails here and is uploaded on a later run.
+   */
+
+  private fun localDigests(
+    chunks: List<EFS3AMZChunk>
+  ): LocalDigests {
+    val sha256 = MessageDigest.getInstance("SHA-256")
+    val partMD5s = mutableMapOf<Int, String>()
+    val ranges = chunks.ifEmpty { listOf(EFS3AMZChunk(1, this.upload.size, 0L)) }
+    val buffer = ByteArray(65536)
+
+    this.upload.streams.invoke().use { stream ->
+      for (range in ranges) {
+        val md5 = if (chunks.isEmpty()) null else MessageDigest.getInstance("MD5")
+        var remaining = range.chunkSize
+        while (remaining > 0L) {
+          val r = stream.read(buffer, 0, Math.min(buffer.size.toLong(), remaining).toInt())
           if (r == -1) {
-            break
+            throw IOException("The file is shorter than the ${this.upload.size} octets it was listed with.")
           }
-          digest.update(buffer, 0, r)
+          sha256.update(buffer, 0, r)
+          md5?.update(buffer, 0, r)
+          remaining -= r
+        }
+        if (md5 != null) {
+          partMD5s[range.partNumber] = hexOf(md5.digest())
         }
       }
-
-    return Base64.encodeBase64String(digest.digest())
+      if (stream.read() != -1) {
+        throw IOException("The file is longer than the ${this.upload.size} octets it was listed with.")
+      }
+    }
+    return LocalDigests(Base64.encodeBase64String(sha256.digest()), partMD5s.toMap())
   }
 
-  private data class Part(
-    val partNumber: Int,
-    val offset: Long,
-    val size: Long
-  )
+  private fun hexOf(
+    bytes: ByteArray
+  ): String {
+    val digits = "0123456789abcdef"
+    val text = StringBuilder(bytes.size * 2)
+    for (b in bytes) {
+      val v = b.toInt() and 0xff
+      text.append(digits[v ushr 4])
+      text.append(digits[v and 0x0f])
+    }
+    return text.toString()
+  }
+
+  /*
+   * The SDK asks the content provider for a new stream for each attempt at a request, so a
+   * request that fails part of the way through is retried from its first octet. A single stream
+   * that cannot be rewound would leave every retry short of data.
+   */
+
+  private fun requestBodyOf(
+    offset: Long,
+    size: Long
+  ): RequestBody {
+    return RequestBody.fromContentProvider(
+      ContentStreamProvider { this.openRange(offset, size) },
+      size,
+      this.upload.contentType
+    )
+  }
+
+  private fun openRange(
+    offset: Long,
+    size: Long
+  ): InputStream {
+    val stream = this.upload.streams.invoke()
+    try {
+      this.skipExactly(stream, offset)
+      val bounded =
+        BoundedInputStream.builder()
+          .setInputStream(stream)
+          .setMaxCount(size)
+          .get()
+      synchronized(this.streamsOpened) {
+        this.streamsOpened.add(bounded)
+      }
+      this.streamSupervised.set(bounded)
+      return bounded
+    } catch (e: Throwable) {
+      stream.close()
+      throw e
+    }
+  }
+
+  /*
+   * InputStream.skip on a file seeks; reading through the skipped octets would read the file up
+   * to each part again.
+   */
+
+  private fun skipExactly(
+    stream: InputStream,
+    count: Long
+  ) {
+    var remaining = count
+    while (remaining > 0L) {
+      val skipped = stream.skip(remaining)
+      if (skipped > 0L) {
+        remaining -= skipped
+      } else if (stream.read() == -1) {
+        throw IOException("The file ended before octet $count.")
+      } else {
+        remaining -= 1L
+      }
+    }
+  }
+
+  private fun closeStreams() {
+    this.streamSupervised.set(null)
+    val streams =
+      synchronized(this.streamsOpened) {
+        val copy = this.streamsOpened.toList()
+        this.streamsOpened.clear()
+        copy
+      }
+    for (stream in streams) {
+      try {
+        stream.close()
+      } catch (e: IOException) {
+        this.logger.debug("Failed to close stream: ", e)
+      }
+    }
+  }
+
+  /*
+   * A multi-part upload that fails is left in the bucket, and the next run continues it from
+   * the parts that are already there. A continued upload keeps the metadata it was created
+   * with, so if the file changed after its uploaded parts, the check after uploading fails and
+   * the next run uploads the file again from the start.
+   */
 
   private fun executeUploadMultiPart(
     client: S3Client
   ) {
-    this.upload.onInformativeEvent("Calculating local content hash.")
-    val contentSHA256 = this.sha256()
-    this.upload.onInformativeEvent("Local content hash: $contentSHA256")
-
-    if (!this.isUploadNecessary(client, contentSHA256, recordSkipped = true)) {
-      return
-    }
-
     val chunks =
       EFS3AMZChunkSizeCalculation.calculate(
         size = this.upload.size,
         minimumChunkSize = this.minimumChunkSize,
-        maximumChunkCount = 900
+        maximumChunkCount = this.maximumChunkCount
       )
 
-    this.upload.onInformativeEvent("Uploading as ${chunks.size} chunks.")
+    this.upload.onInformativeEvent("Calculating local content hash.")
+    val local = this.localDigests(chunks)
+    this.upload.onInformativeEvent("Local content hash: ${local.sha256}")
 
-    val metadata =
-      mapOf(Pair(this.exfilacSHA256Header, this.sha256()))
+    if (!this.isUploadNecessary(client, local.sha256, recordSkipped = true)) {
+      return
+    }
 
-    val upload =
-      CreateMultipartUploadRequest.builder()
-        .bucket(this.upload.bucket)
-        .contentType(this.upload.contentType)
-        .key(this.upload.path)
-        .metadata(metadata)
-        .build()
+    val unfinished = this.unfinishedUploads(client)
+    val resumption = EFS3AMZResumption.choose(chunks, local.partMD5s, unfinished)
+    val completedParts = mutableMapOf<Int, CompletedPart>()
+    val uploadId: String
 
-    this.upload.onInformativeEvent("Requesting multi-part upload…")
-    val uploadResponse = client.createMultipartUpload(upload)
+    if (resumption != null) {
+      uploadId = resumption.uploadId
+      for ((partNumber, eTag) in resumption.parts) {
+        completedParts[partNumber] =
+          CompletedPart.builder()
+            .partNumber(partNumber)
+            .eTag(eTag)
+            .build()
+      }
+      this.upload.onInformativeEvent(
+        "Continuing an earlier multi-part upload: ${completedParts.size} of ${chunks.size} parts are already uploaded."
+      )
+    } else {
+      this.upload.onInformativeEvent("Uploading as ${chunks.size} chunks.")
+
+      val metadata =
+        mapOf(Pair(this.exfilacSHA256Header, local.sha256))
+
+      val create =
+        CreateMultipartUploadRequest.builder()
+          .bucket(this.upload.bucket)
+          .contentType(this.upload.contentType)
+          .key(this.upload.path)
+          .metadata(metadata)
+          .build()
+
+      this.upload.onInformativeEvent("Requesting multi-part upload…")
+      uploadId = client.createMultipartUpload(create).uploadId()
+    }
+
+    this.octetsCompleted =
+      chunks.filter { c -> completedParts.containsKey(c.partNumber) }
+        .sumOf { c -> c.chunkSize }
 
     try {
-      val completedParts =
-        mutableMapOf<Int, CompletedPart>()
+      for (chunk in chunks) {
+        if (completedParts.containsKey(chunk.partNumber)) {
+          continue
+        }
 
-      val parts = this.createParts(chunks)
-      for (part in parts.values) {
-        this.upload.onInformativeEvent("Uploading part ${part.partNumber} (Size ${part.size})…")
-        this.upload.streams.invoke()
-          .use { stream ->
-            stream.skip(part.offset)
-            BoundedInputStream.builder()
-              .setInputStream(stream)
-              .setMaxCount(part.size)
-              .get()
-              .use { boundedStream ->
-                this.streamSupervised.set(boundedStream)
-
-                val uploadPartResponse =
-                  client.uploadPart(
-                    UploadPartRequest.builder()
-                      .bucket(this.upload.bucket)
-                      .contentLength(part.size)
-                      .key(this.upload.path)
-                      .partNumber(part.partNumber)
-                      .uploadId(uploadResponse.uploadId())
-                      .build(),
-                    RequestBody.fromInputStream(
-                      boundedStream,
-                      part.size
-                    )
-                  )
-
-                completedParts[part.partNumber] =
-                  CompletedPart.builder()
-                    .partNumber(part.partNumber)
-                    .eTag(uploadPartResponse.eTag())
-                    .build()
-              }
+        this.upload.onInformativeEvent(
+          "Uploading part ${chunk.partNumber} of ${chunks.size} (Size ${chunk.chunkSize})…"
+        )
+        val uploadPartResponse =
+          try {
+            client.uploadPart(
+              UploadPartRequest.builder()
+                .bucket(this.upload.bucket)
+                .contentLength(chunk.chunkSize)
+                .key(this.upload.path)
+                .partNumber(chunk.partNumber)
+                .uploadId(uploadId)
+                .build(),
+              this.requestBodyOf(chunk.chunkOffset, chunk.chunkSize)
+            )
+          } finally {
+            this.closeStreams()
           }
+
+        completedParts[chunk.partNumber] =
+          CompletedPart.builder()
+            .partNumber(chunk.partNumber)
+            .eTag(uploadPartResponse.eTag())
+            .build()
+        this.octetsCompleted += chunk.chunkSize
       }
 
       this.upload.onInformativeEvent("Completing multi-part upload…")
@@ -379,42 +514,114 @@ class EFS3AMZUpload(
       client.completeMultipartUpload(
         CompleteMultipartUploadRequest.builder()
           .multipartUpload(completedUpload)
-          .uploadId(uploadResponse.uploadId())
+          .uploadId(uploadId)
           .bucket(this.upload.bucket)
           .key(this.upload.path)
           .build()
       )
-
-      if (this.isUploadNecessary(client, contentSHA256, recordSkipped = false)) {
-        throw IOException("After uploading, the size or hash does not match!")
-      }
-
-      this.upload.onInformativeEvent("Uploading completed.")
-      this.upload.onFileSuccessfullyUploaded()
     } catch (e: Throwable) {
+      this.onMultiPartFailed(client, uploadId, e, completedParts.size, chunks.size)
+      throw e
+    }
+
+    if (this.isUploadNecessary(client, local.sha256, recordSkipped = false)) {
+      throw IOException("After uploading, the size or hash does not match!")
+    }
+
+    /*
+     * The other unfinished uploads of this file can never be completed now, and their parts
+     * would stay in the bucket.
+     */
+
+    for (other in unfinished) {
+      if (other.uploadId != uploadId) {
+        this.abortQuietly(client, other.uploadId)
+      }
+    }
+
+    this.upload.onInformativeEvent("Uploading completed.")
+    this.upload.onFileSuccessfullyUploaded()
+  }
+
+  /*
+   * The unfinished multi-part uploads of this file and their parts. A bucket or key that does
+   * not allow listing them gives none, and the file is uploaded from the start.
+   */
+
+  private fun unfinishedUploads(
+    client: S3Client
+  ): List<EFS3AMZResumption.ExistingUpload> {
+    val uploads = mutableListOf<EFS3AMZResumption.ExistingUpload>()
+    try {
+      val listed =
+        client.listMultipartUploadsPaginator(
+          ListMultipartUploadsRequest.builder()
+            .bucket(this.upload.bucket)
+            .prefix(this.upload.path)
+            .build()
+        ).uploads().filter { u -> u.key() == this.upload.path }
+
+      for (listedUpload in listed) {
+        val parts =
+          client.listPartsPaginator(
+            ListPartsRequest.builder()
+              .bucket(this.upload.bucket)
+              .key(this.upload.path)
+              .uploadId(listedUpload.uploadId())
+              .build()
+          ).parts().map { p ->
+            EFS3AMZResumption.ExistingPart(p.partNumber(), p.size(), p.eTag())
+          }
+        uploads.add(EFS3AMZResumption.ExistingUpload(listedUpload.uploadId(), parts))
+      }
+    } catch (e: Exception) {
+      this.logger.debug("Failed to list unfinished uploads: ", e)
+      this.upload.onInformativeEvent(
+        "Could not list unfinished uploads of this file (${e.message}); uploading it from the start."
+      )
+      return listOf()
+    }
+
+    if (uploads.isNotEmpty()) {
+      this.upload.onInformativeEvent("Unfinished uploads of this file in the bucket: ${uploads.size}.")
+    }
+    return uploads.toList()
+  }
+
+  private fun onMultiPartFailed(
+    client: S3Client,
+    uploadId: String,
+    e: Throwable,
+    partsUploaded: Int,
+    partsTotal: Int
+  ) {
+    val errorCode = (e as? S3Exception)?.awsErrorDetails()?.errorCode()
+    if (errorCode == "InvalidPart" || errorCode == "InvalidPartOrder" || errorCode == "EntityTooSmall") {
+      this.abortQuietly(client, uploadId)
+      return
+    }
+    this.upload.onInformativeEvent(
+      "The upload stopped with $partsUploaded of $partsTotal parts uploaded; the next run continues from there."
+    )
+  }
+
+  private fun abortQuietly(
+    client: S3Client,
+    uploadId: String
+  ) {
+    try {
       client.abortMultipartUpload(
         AbortMultipartUploadRequest.builder()
           .bucket(this.upload.bucket)
           .key(this.upload.path)
-          .uploadId(uploadResponse.uploadId())
+          .uploadId(uploadId)
           .build()
       )
-      throw e
+      this.upload.onInformativeEvent("Cancelled unfinished multi-part upload $uploadId.")
+    } catch (e: Exception) {
+      this.logger.debug("Failed to cancel multi-part upload: ", e)
+      this.upload.onInformativeEvent("Could not cancel unfinished multi-part upload $uploadId: ${e.message}")
     }
-  }
-
-  private fun createParts(
-    chunks: List<EFS3AMZChunk>
-  ): MutableMap<Int, Part> {
-    val parts = mutableMapOf<Int, Part>()
-    for (chunk in chunks) {
-      parts[chunk.partNumber] = Part(
-        partNumber = chunk.partNumber,
-        offset = chunk.chunkOffset,
-        size = chunk.chunkSize
-      )
-    }
-    return parts
   }
 
   override fun close() {
