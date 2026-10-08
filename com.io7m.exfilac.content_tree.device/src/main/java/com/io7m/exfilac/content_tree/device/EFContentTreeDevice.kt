@@ -100,13 +100,11 @@ class EFContentTreeDevice(
   ): Uri {
     val mimeType = this.contentResolver.getType(documentUri)
       ?: throw IOException("No MIME type for $documentUri")
-    if (!(mimeType.startsWith("image/")
-        || mimeType.startsWith("video/")
-        || mimeType.startsWith("audio/"))) {
+    if (listOf("image/", "video/", "audio/").none { prefix -> mimeType.startsWith(prefix) }) {
       return documentUri
     }
-    if (this.context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION)
-      != PackageManager.PERMISSION_GRANTED) {
+    val permission = this.context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION)
+    if (permission != PackageManager.PERMISSION_GRANTED) {
       throw IOException(
         "ACCESS_MEDIA_LOCATION is not granted; $documentUri would be read with its location removed"
       )

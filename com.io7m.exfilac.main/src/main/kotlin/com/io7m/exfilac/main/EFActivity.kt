@@ -53,8 +53,8 @@ class EFActivity : AppCompatActivity(R.layout.main_activity) {
      * Reads of photos and videos fail until this is granted (see EFContentTreeDevice).
      */
 
-    if (this.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION)
-      != PackageManager.PERMISSION_GRANTED) {
+    val permission = this.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION)
+    if (permission != PackageManager.PERMISSION_GRANTED) {
       this.requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), 1001)
     }
 
