@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 
 <resources>
-  <string name="app_name">Exfilac</string>
+  <string name="app_name">Exfilac GPS</string>
 
   <string name="buckets">Buckets</string>
   <string name="status">Status</string>
