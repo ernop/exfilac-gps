@@ -20,6 +20,10 @@
   <!-- Notifications are required in order to run a foreground service. -->
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+  <!-- Without this, Android zeroes the location fields of every photo and video the
+       application reads. -->
+  <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
   <application
     android:name="com.io7m.exfilac.main.EFApplication"
     android:allowBackup="true"

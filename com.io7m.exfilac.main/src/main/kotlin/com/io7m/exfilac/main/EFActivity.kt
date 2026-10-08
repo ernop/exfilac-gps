@@ -16,6 +16,8 @@
 
 package com.io7m.exfilac.main
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.annotation.UiThread
 import androidx.appcompat.app.AppCompatActivity
 import com.io7m.exfilac.core.EFState
@@ -46,6 +48,15 @@ class EFActivity : AppCompatActivity(R.layout.main_activity) {
         this.onStateChanged(newValue)
       }
     )
+
+    /*
+     * Reads of photos and videos fail until this is granted (see EFContentTreeDevice).
+     */
+
+    if (this.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION)
+      != PackageManager.PERMISSION_GRANTED) {
+      this.requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), 1001)
+    }
 
     /*
      * If the user hasn't seen the permissions nag screen, then display it. They'll

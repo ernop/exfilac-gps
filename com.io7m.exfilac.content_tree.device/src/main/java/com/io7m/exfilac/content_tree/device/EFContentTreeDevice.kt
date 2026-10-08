@@ -16,11 +16,14 @@
 
 package com.io7m.exfilac.content_tree.device
 
+import android.Manifest
 import android.app.Application
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import com.io7m.exfilac.content_tree.api.EFContentDirectoryType
 import com.io7m.exfilac.content_tree.api.EFContentFileType
@@ -55,7 +58,7 @@ class EFContentTreeDevice(
 
     override fun read(): InputStream {
       return contentResolver.openInputStream(
-        Uri.parse(contentURI.toString())
+        originalUriOf(Uri.parse(contentURI.toString()))
       ) ?: throw IOException("Failed to open input stream: $contentURI")
     }
 
@@ -78,6 +81,41 @@ class EFContentTreeDevice(
     override fun toString(): String {
       return "[Directory ${path.path}]"
     }
+  }
+
+  /*
+   * A read through a document URI is opened by the document provider, so MediaProvider
+   * zeroes the location fields of images (Exif) and MP4-family media files. The MediaStore
+   * URI is opened as this application: MediaProvider returns the file as written while
+   * ACCESS_MEDIA_LOCATION is granted, and otherwise the zeroed copy without an error, so the
+   * read refuses to start without it. MediaStore.setRequireOriginal cannot make that check:
+   * getMediaUri grants access to the URI without a query, MediaProvider matches the grant
+   * against the URI including "?requireOriginal=1", and every open fails with "has no
+   * access". MediaStore has no entry for trashed, pending and .thumbnails files, so those
+   * fail here.
+   */
+
+  private fun originalUriOf(
+    documentUri: Uri
+  ): Uri {
+    val mimeType = this.contentResolver.getType(documentUri)
+      ?: throw IOException("No MIME type for $documentUri")
+    if (!(mimeType.startsWith("image/")
+        || mimeType.startsWith("video/")
+        || mimeType.startsWith("audio/"))) {
+      return documentUri
+    }
+    if (this.context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION)
+      != PackageManager.PERMISSION_GRANTED) {
+      throw IOException(
+        "ACCESS_MEDIA_LOCATION is not granted; $documentUri would be read with its location removed"
+      )
+    }
+    return try {
+      MediaStore.getMediaUri(this.context, documentUri)
+    } catch (e: IllegalArgumentException) {
+      throw IOException("MediaStore has no entry for $documentUri", e)
+    } ?: throw IOException("MediaStore returned no URI for $documentUri")
   }
 
   override fun create(
