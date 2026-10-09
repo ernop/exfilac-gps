@@ -1,14 +1,34 @@
 # Exfilac GPS
 
-Exfilac GPS uploads directories on an Android phone to S3-compatible storage
-and keeps the GPS location in the photos and videos it uploads. It continues
-[Exfilac](https://codeberg.org/io7m-com/exfilac) by Mark Raynsford. Android
-zeroes the location in everything stock Exfilac uploads.
+Exfilac GPS uploads directories on an Android phone to S3-compatible storage.
+It continues [Exfilac](https://codeberg.org/io7m-com/exfilac) by Mark
+Raynsford, and is not affiliated with or endorsed by Exfilac's author.
+
+## Why a new version
 
 Exfilac's last release is 1.1.4 (December 2024). Its Codeberg repository
 accepts no issues or pull requests and its GitHub repository is archived, so
-changes cannot go upstream. Exfilac GPS starts from 1.1.4 and is developed
-here. It is not affiliated with or endorsed by Exfilac's author.
+fixes cannot go upstream. Exfilac GPS starts from 1.1.4 and fixes three
+problems:
+
+1. **Photos and videos lose their location.** Android removes the GPS
+   location from photos (Exif) and videos when an app reads them the way
+   Exfilac does, so every copy Exfilac uploads has lost the location your
+   camera recorded. Exfilac GPS reads them so that the location stays.
+2. **Large files may never finish uploading.** Exfilac starts a large upload
+   again from the beginning on every run and cannot retry a part that fails
+   partway through, so a video of a few gigabytes can take many runs or
+   never finish. Exfilac GPS continues an interrupted upload from the parts
+   already in the bucket.
+3. **System folders clutter every run.** Android keeps hidden folders and
+   files such as `.thumbnails`, `.trashed-*` and `.pending-*` among your
+   photos. Exfilac goes through all of them on every run: it uploads
+   thumbnails, deleted photos and unfinished files, and logs each one as
+   uploaded, skipped or failed. Exfilac GPS skips anything whose name starts
+   with `.` without looking inside.
+
+The [latest release](https://github.com/ernop/exfilac-gps/releases/latest)
+has a signed APK; see [Installing](#installing).
 
 ## Changes from Exfilac 1.1.4
 
@@ -24,12 +44,6 @@ Full diff:
   videos"), and reads image, video and audio files through
   `MediaStore.getMediaUri`. Without the permission those reads fail instead of
   uploading a copy without its location. Other files are read as before.
-- **Hidden files and directories skipped.** Entries whose names start with
-  `.`, such as `.thumbnails`, `.trashed-*`, `.pending-*` and `.nomedia`, are
-  skipped while listing, without listing what is inside them. Exfilac lists
-  and reads them. MediaStore has no entry for most of them, so with the change
-  above every one failed on every run, and `.thumbnails` alone can hold
-  thousands of files.
 - **Large files continue where they stopped.** Exfilac starts a multi-part
   upload (files of 16 MiB or more) from the first part on every run. It
   cancels the upload when it fails, and its parts stay in the bucket when the
@@ -42,6 +56,12 @@ Full diff:
   cannot be rewound, so a retry of a part that failed partway through has
   nothing left to send. Exfilac GPS opens the file at the part's offset for
   each attempt.
+- **Hidden files and directories skipped.** Entries whose names start with
+  `.`, such as `.thumbnails`, `.trashed-*`, `.pending-*` and `.nomedia`, are
+  skipped while listing, without listing what is inside them. Exfilac lists
+  and reads them. MediaStore has no entry for most of them, so with the
+  location change every one would fail on every run, and `.thumbnails` alone
+  can hold thousands of files.
 - **One read to hash a file.** Exfilac reads each file twice for its SHA-256
   before uploading it. Exfilac GPS reads it once, for its SHA-256 and, for a
   multi-part upload, the MD5 of each part. A file whose size changed since it
@@ -80,6 +100,20 @@ the unfinished uploads of the file being uploaded. It has no code that
 deletes files on the phone or objects in the bucket. After each upload it
 reads back the object's size and SHA-256 metadata.
 
+## Installing
+
+Needs Android 10 or later. Download the APK from the
+[latest release](https://github.com/ernop/exfilac-gps/releases/latest), open
+it on the phone, and when Android asks, allow the app you opened it with to
+install apps. When Exfilac GPS opens, allow "Photos and videos", which lets it
+read the location, and allow notifications.
+
+Release APKs are signed with the certificate whose SHA-256 is
+`0b55514f75df2140329c875602325f66db1c5b8471f8931e1d611ee3bf0515b8`
+(`apksigner verify --print-certs` shows it). Android installs an update only
+over an app with the same signature, so uninstall first to switch between a
+release and your own build.
+
 ## Building
 
 Needs JDK 21 and the Android SDK with platform 34 and build-tools 34.0.0.
@@ -99,7 +133,7 @@ apksigner sign --ks your-key.p12 --out exfilac-gps.apk aligned.apk
 ```
 
 Android installs an update only over an app signed with the same key, so keep
-the key. No prebuilt APKs are published.
+the key.
 
 The tests run with `./gradlew :com.io7m.exfilac.tests:test`. The multi-part
 upload tests run against an S3 endpoint named by `EXFILAC_TEST_S3_ENDPOINT`
