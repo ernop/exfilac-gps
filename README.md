@@ -75,7 +75,7 @@ Full diff:
   settings.
 - **Version numbers.** `versionName` is upstream's plus `-gpsN`, and
   `versionCode` is upstream's × 100 + N, where N counts revisions on one
-  upstream release. The current version is 1.1.4-gps3.
+  upstream release. The current version is 1.1.4-gps4.
 - **Android 10 or later.** `minSdk` is 29 (upstream: 26), because
   `MediaStore.getMediaUri` needs it.
 
@@ -120,10 +120,18 @@ Needs JDK 21 and the Android SDK with platform 34 and build-tools 34.0.0.
 
 ```sh
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
+java -Dmake.gradle=false make/Make.java
 ./gradlew :com.io7m.exfilac.main:assembleRelease
 ```
 
-That builds an unsigned APK,
+`make/Make.java` is Exfilac's build script. It checks the code with ktlint and
+generates the user manual into `com.io7m.exfilac.main/src/main/assets/manual`,
+where the app's User Manual and Privacy Policy pages read it; an APK built
+without this step opens neither. It downloads ktlint and xstructural from
+Maven Central and checks their SHA-256. `-Dmake.gradle=false` stops it before
+its own Gradle run (`clean assemble test`).
+
+The Gradle step builds an unsigned APK,
 `com.io7m.exfilac.main/build/outputs/apk/release/com.io7m.exfilac.main-release-unsigned.apk`.
 Align it and sign it with your own key:
 
