@@ -33,7 +33,10 @@ has a signed APK; see [Installing](#installing).
 ## Changes from Exfilac 1.1.4
 
 Full diff:
-[`com.io7m.exfilac-1.1.4...main`](https://github.com/ernop/exfilac-gps/compare/com.io7m.exfilac-1.1.4...main)
+[`io7m-com/exfilac:master...main`](https://github.com/ernop/exfilac-gps/compare/io7m-com:exfilac:master...main).
+`main` also has Exfilac's commits after 1.1.4, up to the archiving of its
+GitHub repository. They change its build, CI, website and README but not the
+app, so the version stays 1.1.4.
 
 - **Location kept in photos and videos.** Android removes the location from
   photos (Exif) and MP4-family videos when an app reads them through the
