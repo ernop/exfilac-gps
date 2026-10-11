@@ -5,16 +5,19 @@ on:
     branches: [ develop, master, feature/*, release/* ]
     tags: [ com.io7m.exfilac-* ]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
           submodules: true
 
       - name: JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
         with:
           java-version: 21
           distribution: 'temurin'
@@ -23,7 +26,7 @@ jobs:
         run: java make/Make.java
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: apk
